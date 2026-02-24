@@ -111,7 +111,7 @@ sequenceDiagram
 
 ```bash
 # 1. Clone the repository
-git clone https://github.com/NaumanMunir9/devops-observability-loki-grafana-mimir-tempo
+git clone https://github.com/NaumanMunir9/devops-observability-loki-grafana-mimir-tempo-240226.git
 cd devops-observability-loki-grafana-mimir-tempo
 
 # 2. Run prerequisites check and add Helm repos
@@ -243,8 +243,8 @@ kubectl delete namespace observability
 ## Author
 
 **Nauman Munir** — Senior DevOps & Cloud Engineer
-- 🔗 [LinkedIn](https://linkedin.com/in/naumanmunir9)
-- 💼 [Upwork](https://upwork.com/freelancers/naumanmunir9)
+- 🔗 [LinkedIn](https://www.linkedin.com/in/nauman-munir/)
+- 💼 [Upwork](https://www.upwork.com/freelancers/~01bcb291153fc784dd?mp_source=share)
 - 🐙 [GitHub](https://github.com/NaumanMunir9)
 
 ---
