@@ -1,0 +1,190 @@
+# Helm Values — Grafana
+# Chart: grafana/grafana
+# Docs: https://github.com/grafana/helm-charts/tree/main/charts/grafana
+
+replicas: 1
+
+# Change this in production — use a Kubernetes secret for the admin password
+adminPassword: "changeme-use-a-k8s-secret"
+
+resources:
+  requests:
+    cpu: 200m
+    memory: 256Mi
+  limits:
+    cpu: 500m
+    memory: 512Mi
+
+persistence:
+  enabled: true
+  size: 10Gi
+  storageClassName: ""  # Leave empty to use cluster default StorageClass
+
+# Service — ClusterIP for internal access; use Ingress for external
+service:
+  type: ClusterIP
+  port: 80
+
+# Ingress — enable and configure for your ingress controller
+ingress:
+  enabled: false
+  # annotations:
+  #   kubernetes.io/ingress.class: nginx
+  # hosts:
+  #   - grafana.yourdomain.com
+  # tls:
+  #   - secretName: grafana-tls
+  #     hosts:
+  #       - grafana.yourdomain.com
+
+# -----------------------------------------------------------------------
+# Datasources — auto-provisioned on startup
+# -----------------------------------------------------------------------
+datasources:
+  datasources.yaml:
+    apiVersion: 1
+    datasources:
+
+      # Mimir — long-term metrics (Prometheus-compatible)
+      - name: Mimir
+        type: prometheus
+        uid: mimir
+        url: http://mimir-nginx.observability.svc.cluster.local/prometheus
+        access: proxy
+        isDefault: true
+        jsonData:
+          httpMethod: POST
+          prometheusType: Mimir
+          exemplarTraceIdDestinations:
+            - name: trace_id
+              datasourceUid: tempo
+
+      # Loki — logs
+      - name: Loki
+        type: loki
+        uid: loki
+        url: http://loki-gateway.observability.svc.cluster.local
+        access: proxy
+        jsonData:
+          derivedFields:
+            # Auto-link trace_id fields in logs to Tempo
+            - matcherRegex: "trace_id=(\\w+)"
+              name: TraceID
+              url: "$${__value.raw}"
+              datasourceUid: tempo
+
+      # Tempo — distributed traces
+      - name: Tempo
+        type: tempo
+        uid: tempo
+        url: http://tempo-query-frontend.observability.svc.cluster.local:3100
+        access: proxy
+        jsonData:
+          tracesToLogsV2:
+            datasourceUid: loki
+            spanStartTimeShift: "-1m"
+            spanEndTimeShift: "1m"
+            filterByTraceID: true
+            filterBySpanID: false
+          tracesToMetrics:
+            datasourceUid: mimir
+            spanStartTimeShift: "-1m"
+            spanEndTimeShift: "1m"
+          serviceMap:
+            datasourceUid: mimir
+          nodeGraph:
+            enabled: true
+          lokiSearch:
+            datasourceUid: loki
+
+# -----------------------------------------------------------------------
+# Dashboard Providers — load dashboards from ConfigMaps
+# -----------------------------------------------------------------------
+dashboardProviders:
+  dashboardproviders.yaml:
+    apiVersion: 1
+    providers:
+      - name: default
+        orgId: 1
+        folder: "Observability Stack"
+        type: file
+        disableDeletion: false
+        updateIntervalSeconds: 30
+        options:
+          path: /var/lib/grafana/dashboards/default
+
+# -----------------------------------------------------------------------
+# Pre-built Dashboards — loaded from Grafana.com by ID
+# -----------------------------------------------------------------------
+dashboards:
+  default:
+    # Kubernetes cluster overview (node-exporter + kube-state-metrics)
+    kubernetes-cluster:
+      gnetId: 15520
+      revision: 4
+      datasource: Mimir
+
+    # Loki operational dashboard
+    loki-operational:
+      gnetId: 14055
+      revision: 5
+      datasource: Loki
+
+    # Mimir overview
+    mimir-overview:
+      gnetId: 17001
+      revision: 2
+      datasource: Mimir
+
+    # Tempo operational dashboard
+    tempo-operational:
+      gnetId: 16710
+      revision: 1
+      datasource: Tempo
+
+    # Fluent Bit monitoring
+    fluent-bit:
+      gnetId: 7752
+      revision: 6
+      datasource: Mimir
+
+    # Node Exporter full
+    node-exporter-full:
+      gnetId: 1860
+      revision: 37
+      datasource: Mimir
+
+# -----------------------------------------------------------------------
+# Alerting — enable Grafana unified alerting
+# -----------------------------------------------------------------------
+grafana.ini:
+  analytics:
+    check_for_updates: false
+  alerting:
+    enabled: false  # Legacy alerting — disabled in favour of unified alerting
+  unified_alerting:
+    enabled: true
+  server:
+    root_url: "%(protocol)s://%(domain)s/"
+  feature_toggles:
+    # Enable log-to-trace and trace-to-log correlation
+    correlations: true
+    traceToMetrics: true
+
+# -----------------------------------------------------------------------
+# Sidecar — load dashboards/datasources from ConfigMaps dynamically
+# -----------------------------------------------------------------------
+sidecar:
+  dashboards:
+    enabled: true
+    searchNamespace: observability
+    label: grafana_dashboard
+    labelValue: "1"
+  datasources:
+    enabled: true
+    searchNamespace: observability
+    label: grafana_datasource
+    labelValue: "1"
+
+serviceMonitor:
+  enabled: true

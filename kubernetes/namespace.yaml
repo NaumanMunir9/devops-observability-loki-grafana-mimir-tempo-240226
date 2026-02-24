@@ -1,0 +1,8 @@
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: observability
+  labels:
+    # Label used by Grafana sidecar to discover ConfigMaps in this namespace
+    kubernetes.io/metadata.name: observability
+    monitoring: enabled

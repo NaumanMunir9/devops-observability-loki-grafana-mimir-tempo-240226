@@ -1,0 +1,198 @@
+name: Deploy Observability Stack
+
+on:
+  push:
+    branches:
+      - main
+    paths:
+      - 'helm/**'
+      - 'kubernetes/**'
+  pull_request:
+    branches:
+      - main
+    paths:
+      - 'helm/**'
+      - 'kubernetes/**'
+  workflow_dispatch:
+    inputs:
+      environment:
+        description: 'Target environment'
+        required: true
+        default: 'staging'
+        type: choice
+        options:
+          - staging
+          - production
+
+env:
+  NAMESPACE: observability
+  HELM_VERSION: v3.14.0
+
+jobs:
+  # -----------------------------------------------------------------------
+  # Lint: validate all Helm values files
+  # -----------------------------------------------------------------------
+  lint:
+    name: Helm Lint
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Helm
+        uses: azure/setup-helm@v4
+        with:
+          version: ${{ env.HELM_VERSION }}
+
+      - name: Add Helm repositories
+        run: |
+          helm repo add grafana https://grafana.github.io/helm-charts
+          helm repo add fluent  https://fluent.github.io/helm-charts
+          helm repo update
+
+      - name: Lint Loki values
+        run: helm lint --values helm/loki/values.yaml grafana/loki || true
+
+      - name: Lint Grafana values
+        run: helm lint --values helm/grafana/values.yaml grafana/grafana || true
+
+      - name: Lint Mimir values
+        run: helm lint --values helm/mimir/values.yaml grafana/mimir-distributed || true
+
+      - name: Lint Tempo values
+        run: helm lint --values helm/tempo/values.yaml grafana/tempo-distributed || true
+
+      - name: Lint Fluent Bit values
+        run: helm lint --values helm/fluent-bit/values.yaml fluent/fluent-bit || true
+
+      - name: Validate Kubernetes manifests
+        run: |
+          kubectl apply --dry-run=client -f kubernetes/namespace.yaml
+          kubectl apply --dry-run=client -f kubernetes/configmap.yaml
+
+  # -----------------------------------------------------------------------
+  # Deploy to Staging (on push to main)
+  # -----------------------------------------------------------------------
+  deploy-staging:
+    name: Deploy — Staging
+    runs-on: ubuntu-latest
+    needs: lint
+    if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+    environment:
+      name: staging
+      url: https://grafana.staging.yourdomain.com
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Helm
+        uses: azure/setup-helm@v4
+        with:
+          version: ${{ env.HELM_VERSION }}
+
+      - name: Configure kubectl
+        run: |
+          mkdir -p ~/.kube
+          echo "${{ secrets.KUBECONFIG_STAGING }}" | base64 -d > ~/.kube/config
+          chmod 600 ~/.kube/config
+
+      - name: Add Helm repositories
+        run: |
+          helm repo add grafana https://grafana.github.io/helm-charts
+          helm repo add fluent  https://fluent.github.io/helm-charts
+          helm repo update
+
+      - name: Apply namespace and ConfigMaps
+        run: |
+          kubectl apply -f kubernetes/namespace.yaml
+          kubectl apply -f kubernetes/configmap.yaml
+
+      - name: Deploy Mimir
+        run: |
+          helm upgrade --install mimir grafana/mimir-distributed \
+            --namespace ${{ env.NAMESPACE }} \
+            --values helm/mimir/values.yaml \
+            --wait --timeout 8m
+
+      - name: Deploy Loki
+        run: |
+          helm upgrade --install loki grafana/loki \
+            --namespace ${{ env.NAMESPACE }} \
+            --values helm/loki/values.yaml \
+            --wait --timeout 8m
+
+      - name: Deploy Tempo
+        run: |
+          helm upgrade --install tempo grafana/tempo-distributed \
+            --namespace ${{ env.NAMESPACE }} \
+            --values helm/tempo/values.yaml \
+            --wait --timeout 8m
+
+      - name: Deploy Fluent Bit
+        run: |
+          helm upgrade --install fluent-bit fluent/fluent-bit \
+            --namespace ${{ env.NAMESPACE }} \
+            --values helm/fluent-bit/values.yaml \
+            --wait --timeout 5m
+
+      - name: Deploy Grafana
+        run: |
+          helm upgrade --install grafana grafana/grafana \
+            --namespace ${{ env.NAMESPACE }} \
+            --values helm/grafana/values.yaml \
+            --set adminPassword="${{ secrets.GRAFANA_ADMIN_PASSWORD }}" \
+            --wait --timeout 5m
+
+      - name: Verify deployment
+        run: |
+          kubectl get pods -n ${{ env.NAMESPACE }}
+          echo "---"
+          kubectl get svc -n ${{ env.NAMESPACE }}
+
+  # -----------------------------------------------------------------------
+  # Deploy to Production (manual approval required)
+  # -----------------------------------------------------------------------
+  deploy-production:
+    name: Deploy — Production
+    runs-on: ubuntu-latest
+    needs: deploy-staging
+    if: github.event_name == 'workflow_dispatch' && github.event.inputs.environment == 'production'
+    environment:
+      name: production
+      url: https://grafana.yourdomain.com
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Helm
+        uses: azure/setup-helm@v4
+        with:
+          version: ${{ env.HELM_VERSION }}
+
+      - name: Configure kubectl
+        run: |
+          mkdir -p ~/.kube
+          echo "${{ secrets.KUBECONFIG_PRODUCTION }}" | base64 -d > ~/.kube/config
+          chmod 600 ~/.kube/config
+
+      - name: Add Helm repositories
+        run: |
+          helm repo add grafana https://grafana.github.io/helm-charts
+          helm repo add fluent  https://fluent.github.io/helm-charts
+          helm repo update
+
+      - name: Apply namespace and ConfigMaps
+        run: |
+          kubectl apply -f kubernetes/namespace.yaml
+          kubectl apply -f kubernetes/configmap.yaml
+
+      - name: Deploy full stack
+        run: bash scripts/deploy.sh
+        env:
+          GRAFANA_ADMIN_PASSWORD: ${{ secrets.GRAFANA_ADMIN_PASSWORD }}
+
+      - name: Verify deployment
+        run: |
+          kubectl get pods -n ${{ env.NAMESPACE }}
+          kubectl get svc -n ${{ env.NAMESPACE }}
+          kubectl get pvc -n ${{ env.NAMESPACE }}

@@ -1,0 +1,100 @@
+# Helm Values — Grafana Loki
+# Chart: grafana/loki
+# Docs: https://grafana.com/docs/loki/latest/setup/install/helm/
+
+loki:
+  # Disable multi-tenancy for single-org deployments
+  auth_enabled: false
+
+  commonConfig:
+    replication_factor: 1
+
+  storage:
+    type: filesystem  # Use 'gcs', 's3', or 'azure' for production object storage
+
+  # Schema config — defines how logs are indexed and stored
+  schemaConfig:
+    configs:
+      - from: "2024-01-01"
+        store: tsdb
+        object_store: filesystem
+        schema: v13
+        index:
+          prefix: loki_index_
+          period: 24h
+
+  limits_config:
+    allow_structured_metadata: true
+    volume_enabled: true
+    # Retention: set to 0 to disable, or specify duration e.g. "744h" (31 days)
+    retention_period: 744h
+
+  # Compactor handles retention and compaction
+  compactor:
+    working_directory: /var/loki/compactor
+    compaction_interval: 10m
+    retention_enabled: true
+    retention_delete_delay: 2h
+    retention_delete_worker_count: 150
+    delete_request_store: filesystem
+
+# Single Binary mode — suitable for small/medium clusters
+deploymentMode: SingleBinary
+
+singleBinary:
+  replicas: 1
+  resources:
+    requests:
+      cpu: 250m
+      memory: 512Mi
+    limits:
+      cpu: 1000m
+      memory: 1Gi
+  persistence:
+    size: 50Gi
+    storageClass: ""  # Leave empty to use cluster default StorageClass
+
+# Disable components not needed in single-binary mode
+backend:
+  replicas: 0
+read:
+  replicas: 0
+write:
+  replicas: 0
+
+chunksCache:
+  enabled: false
+resultsCache:
+  enabled: false
+
+# Disable bundled Grafana agent — using Fluent Bit instead
+monitoring:
+  dashboards:
+    enabled: true
+  rules:
+    enabled: true
+  serviceMonitor:
+    enabled: true
+  selfMonitoring:
+    enabled: false
+    grafanaAgent:
+      installOperator: false
+
+# Loki Canary — lightweight read/write smoke test
+lokiCanary:
+  enabled: false
+
+# Gateway — NGINX proxy in front of Loki (optional, aids multi-component routing)
+gateway:
+  enabled: true
+  replicas: 1
+  resources:
+    requests:
+      cpu: 100m
+      memory: 128Mi
+    limits:
+      cpu: 200m
+      memory: 256Mi
+
+test:
+  enabled: false

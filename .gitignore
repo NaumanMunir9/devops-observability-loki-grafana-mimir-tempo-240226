@@ -1,0 +1,48 @@
+# Observability Stack — Git Ignore
+
+# Terraform (not used in this repo but included as safety net)
+.terraform/
+*.tfstate
+*.tfstate.backup
+.terraform.lock.hcl
+*.tfplan
+
+# Kubernetes secrets — never commit these
+*.pem
+*.key
+*.crt
+*.p12
+kubeconfig
+kubeconfig.*
+.kube/
+
+# Environment files
+.env
+.env.*
+*.env
+
+# Helm
+charts/
+*.tgz
+
+# Secrets and credentials
+secrets/
+*secret*
+*credentials*
+
+# IDE
+.idea/
+.vscode/
+*.swp
+*.swo
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Logs
+*.log
+
+# Build outputs
+dist/
+build/

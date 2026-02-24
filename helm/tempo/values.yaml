@@ -1,0 +1,181 @@
+# Helm Values — Grafana Tempo (Distributed)
+# Chart: grafana/tempo-distributed
+# Docs: https://grafana.com/docs/tempo/latest/setup/helm-chart/
+
+nameOverride: tempo
+
+# -----------------------------------------------------------------------
+# Global Tempo configuration
+# -----------------------------------------------------------------------
+tempo:
+  reportingEnabled: false
+
+  storage:
+    trace:
+      # Use 'local' for single-node dev, 's3'/'gcs'/'azure' for production
+      backend: s3
+      s3:
+        endpoint: tempo-minio.observability.svc.cluster.local:9000
+        bucket: tempo-traces
+        access_key: "${MINIO_ROOT_USER}"
+        secret_key: "${MINIO_ROOT_PASSWORD}"
+        insecure: true  # Set to false when using real TLS
+      local:
+        path: /var/tempo/traces
+      pool:
+        max_workers: 100
+        queue_depth: 10000
+
+  # Trace retention
+  compactor:
+    compaction:
+      block_retention: 720h  # 30 days
+
+  # Metrics generator — produces service graph and span metrics for Mimir
+  metrics_generator:
+    registry:
+      external_labels:
+        source: tempo
+        cluster: kubernetes
+    storage:
+      path: /var/tempo/generator/wal
+      remote_write:
+        - url: http://mimir-nginx.observability.svc.cluster.local/api/v1/push
+          send_exemplars: true
+
+  # Query configuration
+  query_frontend:
+    search:
+      max_duration: 0
+
+# -----------------------------------------------------------------------
+# Receivers — accept traces via OTLP, Jaeger, and Zipkin
+# -----------------------------------------------------------------------
+traces:
+  otlp:
+    http:
+      enabled: true    # port 4318
+    grpc:
+      enabled: true    # port 4317
+  jaeger:
+    thriftBinary:
+      enabled: true
+    thriftCompact:
+      enabled: true
+    thriftHttp:
+      enabled: true
+    grpc:
+      enabled: true
+  zipkin:
+    enabled: true
+
+# -----------------------------------------------------------------------
+# Component sizing
+# -----------------------------------------------------------------------
+distributor:
+  replicas: 1
+  resources:
+    requests:
+      cpu: 100m
+      memory: 256Mi
+    limits:
+      cpu: 500m
+      memory: 512Mi
+
+ingester:
+  replicas: 1
+  resources:
+    requests:
+      cpu: 250m
+      memory: 512Mi
+    limits:
+      cpu: 1000m
+      memory: 2Gi
+  persistence:
+    enabled: true
+    size: 10Gi
+    storageClass: ""
+
+querier:
+  replicas: 1
+  resources:
+    requests:
+      cpu: 100m
+      memory: 256Mi
+    limits:
+      cpu: 500m
+      memory: 512Mi
+
+queryFrontend:
+  replicas: 1
+  resources:
+    requests:
+      cpu: 100m
+      memory: 128Mi
+    limits:
+      cpu: 250m
+      memory: 256Mi
+
+compactor:
+  enabled: true
+  replicas: 1
+  resources:
+    requests:
+      cpu: 100m
+      memory: 256Mi
+    limits:
+      cpu: 500m
+      memory: 1Gi
+  persistence:
+    enabled: true
+    size: 10Gi
+    storageClass: ""
+
+metricsGenerator:
+  enabled: true
+  replicas: 1
+  resources:
+    requests:
+      cpu: 100m
+      memory: 256Mi
+    limits:
+      cpu: 500m
+      memory: 512Mi
+  persistence:
+    enabled: true
+    size: 5Gi
+    storageClass: ""
+
+# -----------------------------------------------------------------------
+# MinIO — bundled object storage for traces
+# -----------------------------------------------------------------------
+minio:
+  enabled: true
+  rootUser: tempo
+  rootPassword: supersecret  # Change or inject via Secret
+  buckets:
+    - name: tempo-traces
+      policy: none
+      purge: false
+  persistence:
+    enabled: true
+    size: 50Gi
+    storageClass: ""
+  resources:
+    requests:
+      cpu: 100m
+      memory: 256Mi
+    limits:
+      cpu: 500m
+      memory: 1Gi
+
+# -----------------------------------------------------------------------
+# Monitoring
+# -----------------------------------------------------------------------
+serviceMonitor:
+  enabled: true
+metaMonitoring:
+  serviceMonitor:
+    enabled: true
+  prometheusRule:
+    enabled: true

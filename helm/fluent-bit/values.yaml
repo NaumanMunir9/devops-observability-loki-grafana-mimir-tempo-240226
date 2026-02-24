@@ -1,0 +1,178 @@
+# Helm Values — Fluent Bit
+# Chart: fluent/fluent-bit
+# Docs: https://docs.fluentbit.io/manual/installation/kubernetes
+
+# Run as DaemonSet — one pod per node
+kind: DaemonSet
+
+# Resource limits per node agent
+resources:
+  requests:
+    cpu: 50m
+    memory: 64Mi
+  limits:
+    cpu: 200m
+    memory: 256Mi
+
+# Tolerate all nodes including control-plane/master
+tolerations:
+  - key: node-role.kubernetes.io/control-plane
+    operator: Exists
+    effect: NoSchedule
+  - key: node-role.kubernetes.io/master
+    operator: Exists
+    effect: NoSchedule
+
+# Volume mounts — access host log paths
+volumeMounts:
+  - name: varlog
+    mountPath: /var/log
+  - name: varlibdockercontainers
+    mountPath: /var/lib/docker/containers
+    readOnly: true
+  - name: etcmachineid
+    mountPath: /etc/machine-id
+    readOnly: true
+
+volumes:
+  - name: varlog
+    hostPath:
+      path: /var/log
+  - name: varlibdockercontainers
+    hostPath:
+      path: /var/lib/docker/containers
+  - name: etcmachineid
+    hostPath:
+      path: /etc/machine-id
+      type: File
+
+# -----------------------------------------------------------------------
+# Fluent Bit pipeline configuration
+# -----------------------------------------------------------------------
+config:
+  # ---- SERVICE ----
+  service: |
+    [SERVICE]
+        Flush         5
+        Daemon        Off
+        Log_Level     warn
+        Parsers_File  custom_parsers.conf
+        HTTP_Server   On
+        HTTP_Listen   0.0.0.0
+        HTTP_Port     2020
+        Health_Check  On
+
+  # ---- INPUTS ----
+  inputs: |
+    # Tail all container logs from the host
+    [INPUT]
+        Name              tail
+        Tag               kube.*
+        Path              /var/log/containers/*.log
+        multiline.parser  docker, cri
+        Mem_Buf_Limit     50MB
+        Skip_Long_Lines   On
+        Refresh_Interval  10
+
+    # Systemd journal — node-level logs (kubelet, containerd, etc.)
+    [INPUT]
+        Name            systemd
+        Tag             host.*
+        Systemd_Filter  _SYSTEMD_UNIT=kubelet.service
+        Systemd_Filter  _SYSTEMD_UNIT=containerd.service
+        Read_From_Tail  On
+
+  # ---- FILTERS ----
+  filters: |
+    # Enrich container logs with Kubernetes metadata
+    # (namespace, pod name, container name, labels, annotations)
+    [FILTER]
+        Name                kubernetes
+        Match               kube.*
+        Kube_URL            https://kubernetes.default.svc:443
+        Kube_CA_File        /var/run/secrets/kubernetes.io/serviceaccount/ca.crt
+        Kube_Token_File     /var/run/secrets/kubernetes.io/serviceaccount/token
+        Kube_Tag_Prefix     kube.var.log.containers.
+        Merge_Log           On
+        Merge_Log_Key       log_processed
+        K8S-Logging.Parser  On
+        K8S-Logging.Exclude Off
+        Annotations         Off  # Disable annotation injection to reduce cardinality
+        Labels              On
+
+    # Drop health-check and readiness probe spammy logs
+    [FILTER]
+        Name    grep
+        Match   kube.*
+        Exclude log /health|/ready|/ping|/metrics
+
+    # Add cluster_name label to all records
+    [FILTER]
+        Name    record_modifier
+        Match   *
+        Record  cluster_name kubernetes
+
+  # ---- OUTPUTS ----
+  outputs: |
+    # Ship Kubernetes container logs to Loki
+    [OUTPUT]
+        Name                   loki
+        Match                  kube.*
+        Host                   loki-gateway.observability.svc.cluster.local
+        Port                   80
+        Labels                 job=fluentbit, namespace=$kubernetes['namespace_name'], pod=$kubernetes['pod_name'], container=$kubernetes['container_name'], node=$kubernetes['host'], app=$kubernetes['labels']['app']
+        Label_Keys             $level,$severity,$msg
+        Remove_Keys            kubernetes,stream
+        Auto_Kubernetes_Labels Off
+        Line_Format            json
+        Retry_Limit            5
+
+    # Ship host/node logs to Loki
+    [OUTPUT]
+        Name        loki
+        Match       host.*
+        Host        loki-gateway.observability.svc.cluster.local
+        Port        80
+        Labels      job=fluentbit-host, node=${NODE_NAME}
+        Line_Format json
+        Retry_Limit 5
+
+  # ---- CUSTOM PARSERS ----
+  customParsers: |
+    [PARSER]
+        Name        docker
+        Format      json
+        Time_Key    time
+        Time_Format %Y-%m-%dT%H:%M:%S.%L
+        Time_Keep   On
+
+    [PARSER]
+        Name        cri
+        Format      regex
+        Regex       ^(?<time>[^ ]+) (?<stream>stdout|stderr) (?<logtag>[^ ]*) (?<log>.*)$
+        Time_Key    time
+        Time_Format %Y-%m-%dT%H:%M:%S.%L%z
+
+# -----------------------------------------------------------------------
+# Expose Fluent Bit metrics for Prometheus scraping
+# -----------------------------------------------------------------------
+serviceMonitor:
+  enabled: true
+  namespace: observability
+  interval: 30s
+  scrapeTimeout: 10s
+
+# Make NODE_NAME available to config via downward API
+env:
+  - name: NODE_NAME
+    valueFrom:
+      fieldRef:
+        fieldPath: spec.nodeName
+
+# RBAC — required for the Kubernetes filter to call the API server
+rbac:
+  create: true
+  nodeAccess: true
+
+serviceAccount:
+  create: true

@@ -1,0 +1,50 @@
+---
+# ConfigMap: Grafana dashboard label — used by Grafana sidecar to auto-load dashboards
+# Any ConfigMap in the observability namespace with this label will be picked up automatically
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: observability-stack-config
+  namespace: observability
+  labels:
+    grafana_dashboard: "1"
+data:
+  # Stack metadata used across components
+  CLUSTER_NAME: "kubernetes"
+  ENVIRONMENT: "production"
+  LOKI_ENDPOINT: "http://loki-gateway.observability.svc.cluster.local"
+  MIMIR_ENDPOINT: "http://mimir-nginx.observability.svc.cluster.local/prometheus"
+  TEMPO_ENDPOINT: "http://tempo-query-frontend.observability.svc.cluster.local:3100"
+
+---
+# ConfigMap: Grafana alert contact point — Slack example
+# Apply after deploying Grafana; configure SLACK_WEBHOOK_URL as a Secret
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: grafana-alerting-config
+  namespace: observability
+  labels:
+    grafana_dashboard: "1"
+data:
+  alerting-config.yaml: |
+    apiVersion: 1
+    contactPoints:
+      - orgId: 1
+        name: Slack Alerts
+        receivers:
+          - uid: slack-receiver
+            type: slack
+            settings:
+              url: "${SLACK_WEBHOOK_URL}"
+              title: "{{ template \"slack.title\" . }}"
+              text: "{{ template \"slack.text\" . }}"
+    policies:
+      - orgId: 1
+        receiver: Slack Alerts
+        group_by:
+          - alertname
+          - namespace
+        group_wait: 30s
+        group_interval: 5m
+        repeat_interval: 12h

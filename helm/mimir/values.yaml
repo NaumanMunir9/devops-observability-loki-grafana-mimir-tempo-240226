@@ -1,0 +1,197 @@
+# Helm Values — Grafana Mimir (Distributed)
+# Chart: grafana/mimir-distributed
+# Docs: https://grafana.com/docs/mimir/latest/set-up/helm-chart/
+
+# Use the small single-binary layout for simplicity
+# Switch to 'large.yaml' overrides for production scale-out
+nameOverride: mimir
+
+# -----------------------------------------------------------------------
+# Global Mimir configuration
+# -----------------------------------------------------------------------
+mimir:
+  structuredConfig:
+    # Disable multi-tenancy — all metrics land in "anonymous" tenant
+    multitenancy_enabled: false
+
+    # Ingester — write path
+    ingester:
+      ring:
+        replication_factor: 1  # Increase to 3 for HA
+
+    # Blocks storage — use MinIO (bundled) or external S3/GCS/Azure
+    blocks_storage:
+      backend: s3
+      s3:
+        endpoint: mimir-minio.observability.svc.cluster.local:9000
+        bucket_name: mimir-blocks
+        access_key_id: "${MINIO_ROOT_USER}"
+        secret_access_key: "${MINIO_ROOT_PASSWORD}"
+        insecure: true  # Set to false when using TLS
+      tsdb:
+        dir: /data/tsdb
+        retention_period: 24h  # local TSDB retention before upload to object store
+
+    # Ruler — manages recording rules and alerts
+    ruler:
+      enable_api: true
+      alertmanager_url: "http://mimir-alertmanager.observability.svc.cluster.local"
+
+    # Alertmanager — unified alerting
+    alertmanager:
+      enable_api: true
+      external_url: http://mimir-alertmanager.observability.svc.cluster.local
+
+    # Compactor — long-term block compaction
+    compactor:
+      sharding_ring:
+        kvstore:
+          store: memberlist
+
+    # Limits — tune per tenant (or globally with multitenancy disabled)
+    limits:
+      ingestion_rate: 100000
+      max_label_names_per_series: 30
+      max_global_series_per_user: 1500000
+
+# -----------------------------------------------------------------------
+# Component sizing — small footprint, suitable for dev/staging
+# -----------------------------------------------------------------------
+ingester:
+  replicas: 1
+  resources:
+    requests:
+      cpu: 250m
+      memory: 512Mi
+    limits:
+      cpu: 1000m
+      memory: 2Gi
+  zoneAwareReplication:
+    enabled: false
+  persistentVolume:
+    enabled: true
+    size: 20Gi
+    storageClass: ""
+
+distributor:
+  replicas: 1
+  resources:
+    requests:
+      cpu: 100m
+      memory: 256Mi
+    limits:
+      cpu: 500m
+      memory: 512Mi
+
+querier:
+  replicas: 1
+  resources:
+    requests:
+      cpu: 100m
+      memory: 256Mi
+    limits:
+      cpu: 500m
+      memory: 512Mi
+
+query_frontend:
+  replicas: 1
+  resources:
+    requests:
+      cpu: 100m
+      memory: 128Mi
+    limits:
+      cpu: 250m
+      memory: 256Mi
+
+compactor:
+  replicas: 1
+  resources:
+    requests:
+      cpu: 100m
+      memory: 256Mi
+    limits:
+      cpu: 500m
+      memory: 1Gi
+  persistentVolume:
+    enabled: true
+    size: 20Gi
+    storageClass: ""
+
+ruler:
+  enabled: true
+  replicas: 1
+
+alertmanager:
+  enabled: true
+  replicas: 1
+  persistentVolume:
+    enabled: true
+    size: 1Gi
+    storageClass: ""
+  fallbackConfig: |
+    global: {}
+    route:
+      receiver: blackhole
+    receivers:
+      - name: blackhole
+
+store_gateway:
+  replicas: 1
+  zoneAwareReplication:
+    enabled: false
+  persistentVolume:
+    enabled: true
+    size: 10Gi
+    storageClass: ""
+
+# -----------------------------------------------------------------------
+# MinIO — bundled object storage (replace with managed S3/GCS in production)
+# -----------------------------------------------------------------------
+minio:
+  enabled: true
+  rootUser: mimir
+  rootPassword: supersecret  # Change this or inject via Secret
+  buckets:
+    - name: mimir-blocks
+      policy: none
+      purge: false
+    - name: mimir-ruler
+      policy: none
+      purge: false
+    - name: mimir-alertmanager
+      policy: none
+      purge: false
+  persistence:
+    enabled: true
+    size: 50Gi
+    storageClass: ""
+  resources:
+    requests:
+      cpu: 100m
+      memory: 256Mi
+    limits:
+      cpu: 500m
+      memory: 1Gi
+
+# -----------------------------------------------------------------------
+# NGINX gateway — single entry point for remote_write and queries
+# -----------------------------------------------------------------------
+nginx:
+  enabled: true
+  replicas: 1
+  resources:
+    requests:
+      cpu: 100m
+      memory: 128Mi
+    limits:
+      cpu: 200m
+      memory: 256Mi
+
+# -----------------------------------------------------------------------
+# Monitoring
+# -----------------------------------------------------------------------
+metaMonitoring:
+  serviceMonitor:
+    enabled: true
+  prometheusRule:
+    enabled: true
